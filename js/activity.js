@@ -1,11 +1,14 @@
 // Find TODO statements and complete them to build the interactive airline route map.
 
-// TODO: add your uniqname to the HTML (use id #uniqname) file so that your work can be identified 
+// TODO: add your uniqname to the HTML (use id #uniqname) file so that your work can be identified
+document.getElementById("uniqname").textContent = "afwaheed";
 
 // TODO: import data using d3.csv()
-const dataFile = 
+const dataFile = await d3.csv("data/routes.csv");
 
 const colornone = "#ccc";
+const colorin = "#00f";   // incoming highlight
+const colorout = "#f00";  // outgoing highlight
 
 // define colors for airlines, you can expand this as needed, WN is Southwest, B6 is JetBlue
 const airlineColor = { WN: "orange", B6: "steelblue" };
@@ -23,7 +26,8 @@ select.selectAll("option")
     .data(airlines)
     .join("option")
     .attr("value", d => d)
-    .text(// TODO: build options from selector that allows us to view all airlines or filter by a specific airline);
+    // TODO: build options from selector that allows us to view all airlines or filter by a specific airline
+    .text(d => d === "all" ? "All Airlines" : (airlineName[d] || d));
 
 // helper function to build outgoing links for each leaf node
 function bilink(root) {
@@ -32,9 +36,16 @@ function bilink(root) {
 
     // for each leaf node, build an outgoing array of [source, target, airline] tuples
     for (const d of root.leaves()) {
+        d.incoming = [];
         d.outgoing = d.data.destinations
             .map(({ target, airline, targetRegion }) => [d, map.get(`root/${targetRegion}/${target}`), airline])
             .filter(([, target]) => target !== undefined);
+    }
+    // populate incoming arrays from each link's target
+    for (const d of root.leaves()) {
+        for (const o of d.outgoing) {
+            o[1].incoming.push(o);
+        }
     }
 
     return root;
@@ -48,15 +59,12 @@ function id(node) {
 //rebuild hierarchy data and redraw chart on selection change
 function draw(airlineFilter) {
 
-    // filter data based on selection, if "all" is selected, use the entire dataset
     const filtered = airlineFilter === "all"
         ? dataFile
         : dataFile.filter(d => d.Airline === airlineFilter);
 
-    // group data by source region and then by source airport
     const grouped = d3.group(filtered, d => d["Source region"], d => d["Source airport"]);
 
-    // transform grouped data into a hierarchy format suitable for the chart
     const hierarchyData = {
         name: "root",
         children: Array.from(grouped, ([region, airports]) => ({
@@ -75,10 +83,102 @@ function draw(airlineFilter) {
 draw("all"); // initial draw
 
 
-// TODO: integrate code from Observable notebook https://observablehq.com/@d3/hierarchical-edge-bundling 
+// TODO: integrate code from Observable notebook https://observablehq.com/@d3/hierarchical-edge-bundling
 // TODO: edit the tooltip to show the airport code, the region, and the number of outgoing and incoming routes for that airport
 // TODO: edit link to show different colors for different airlines, you can use the airlineColor object defined above for reference
 // TODO: edit overed and outed functions to highlight connected links and nodes on hover
+// Adapted from https://observablehq.com/@d3/hierarchical-edge-bundling
 function createChart(data) {
+    const width = 954;
+    const radius = width / 2;
 
+    const tree = d3.cluster().size([2 * Math.PI, radius - 100]);
+
+    const root = tree(bilink(
+        d3.hierarchy(data)
+            .sort((a, b) => d3.ascending(a.height, b.height) || d3.ascending(a.data.name, b.data.name))
+    ));
+
+    const svg = d3.create("svg")
+        .attr("width", width)
+        .attr("height", width)
+        .attr("viewBox", [-width / 2, -width / 2, width, width])
+        .attr("style", "max-width: 100%; height: auto; font: 10px sans-serif;");
+
+    const line = d3.lineRadial()
+        .curve(d3.curveBundle.beta(0.85))
+        .radius(d => d.y)
+        .angle(d => d.x);
+
+    // Leaf labels (airports)
+    const node = svg.append("g")
+        .selectAll("g")
+        .data(root.leaves())
+        .join("g")
+        .attr("transform", d => `rotate(${d.x * 180 / Math.PI - 90}) translate(${d.y},0)`)
+        .append("text")
+        .attr("dy", "0.31em")
+        .attr("x", d => d.x < Math.PI ? 6 : -6)
+        .attr("text-anchor", d => d.x < Math.PI ? "start" : "end")
+        .attr("transform", d => d.x >= Math.PI ? "rotate(180)" : null)
+        .text(d => d.data.name)
+        .each(function (d) { d.text = this; })
+        .on("mouseover", overed)
+        .on("mouseout", outed)
+        // TODO: tooltip showing airport code, region, and outgoing/incoming counts
+        .call(text => text.append("title").text(d =>
+            `${d.data.name} (${d.parent.data.name})\n` +
+            `${d.outgoing.length} outgoing routes\n` +
+            `${d.incoming.length} incoming routes`));
+
+    // Route links — colored by airline
+    const link = svg.append("g")
+        .attr("fill", "none")
+        .selectAll("path")
+        .data(root.leaves().flatMap(leaf => leaf.outgoing))
+        .join("path")
+        .style("mix-blend-mode", "multiply")
+        .attr("stroke", ([, , airline]) => airlineColor[airline] || colornone)
+        .attr("d", ([i, o]) => line(i.path(o)))
+        .each(function (d) { d.path = this; });
+
+    // Highlight connected nodes and links on hover
+    function overed(event, d) {
+        link.style("mix-blend-mode", null);
+        d3.select(this).attr("font-weight", "bold");
+
+        d3.selectAll(d.incoming.map(l => l.path))
+            .attr("stroke", colorin)
+            .raise();
+        d3.selectAll(d.incoming.map(([source]) => source.text))
+            .attr("fill", colorin)
+            .attr("font-weight", "bold");
+
+        d3.selectAll(d.outgoing.map(l => l.path))
+            .attr("stroke", colorout)
+            .raise();
+        d3.selectAll(d.outgoing.map(([, target]) => target.text))
+            .attr("fill", colorout)
+            .attr("font-weight", "bold");
+    }
+
+    // Restore default styling on unhover
+    function outed(event, d) {
+        link.style("mix-blend-mode", "multiply");
+        d3.select(this).attr("font-weight", null);
+
+        d3.selectAll(d.incoming.map(l => l.path))
+            .attr("stroke", ([, , airline]) => airlineColor[airline] || colornone);
+        d3.selectAll(d.incoming.map(([source]) => source.text))
+            .attr("fill", null)
+            .attr("font-weight", null);
+
+        d3.selectAll(d.outgoing.map(l => l.path))
+            .attr("stroke", ([, , airline]) => airlineColor[airline] || colornone);
+        d3.selectAll(d.outgoing.map(([, target]) => target.text))
+            .attr("fill", null)
+            .attr("font-weight", null);
+    }
+
+    return svg.node();
 }
